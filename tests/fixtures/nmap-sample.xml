@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun>
+  <host>
+    <status state="up"/>
+    <address addr="192.0.2.10" addrtype="ipv4"/>
+    <hostnames><hostname name="app.example.test" type="user"/></hostnames>
+    <ports>
+      <port protocol="tcp" portid="443"><state state="open"/><service name="https" product="nginx" version="1.24"/></port>
+      <port protocol="tcp" portid="22"><state state="closed"/></port>
+    </ports>
+  </host>
+</nmaprun>

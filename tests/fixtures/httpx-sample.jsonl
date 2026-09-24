@@ -1,0 +1,2 @@
+{"url":"https://app.example.test","status_code":200,"title":"Example App","webserver":"nginx","tech":["nginx","FastAPI"]}
+{"url":"https://app.example.test/api/status","status_code":200,"tech":["FastAPI"]}

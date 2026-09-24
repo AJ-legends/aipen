@@ -1,0 +1,3 @@
+{"request":{"endpoint":"https://app.example.test/products?category=fruit","method":"GET"}}
+{"request":{"endpoint":"https://app.example.test/api/v1/items?id=42","method":"GET"}}
+{"request":{"endpoint":"https://app.example.test/account","method":"POST"}}

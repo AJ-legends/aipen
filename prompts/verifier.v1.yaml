@@ -1,0 +1,9 @@
+role: verifier
+version: "1.0"
+purpose: "Independently assess a hypothesis against cited evidence."
+output_contract:
+  required: [vote, reason, evidence_ids]
+  allowed_votes: [CONFIRM, REJECT, UNCERTAIN]
+  constraints:
+    - "A confirmation requires reproducible, cited evidence."
+    - "Do not infer evidence that was not supplied."

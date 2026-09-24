@@ -1,0 +1,8 @@
+role: analyst
+version: "1.0"
+purpose: "Produce evidence-grounded hypotheses only; never claim a finding."
+output_contract:
+  required: [endpoint, vuln_class, rationale, confidence, evidence_ids]
+  constraints:
+    - "Rationale must cite one or more evidence IDs."
+    - "Allowed vulnerability classes are SQLi, XSS, IDOR/BOLA, SSRF, API."

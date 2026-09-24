@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ app_name }}</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <main>
+    <p class="eyebrow">LOCAL · EVIDENCE-LED · SAFETY-FIRST</p>
+    <h1>AIPEN</h1>
+    <p class="lead">AI-assisted web-application security testing, built around explicit scope and evidence.</p>
+    <section class="notice">
+      <h2>Phase 1 scaffold is ready</h2>
+      <p>The policy engine, local database, target API, run-state persistence, audit foundation, and UI shell are in place. Tool execution and AI provider access remain intentionally disabled until their adapters are implemented and configured.</p>
+    </section>
+    <section class="grid">
+      <article><h2>Targets</h2><p>Create targets through <code>POST /api/targets</code> with an explicit scope configuration.</p></article>
+      <article><h2>Safety gate</h2><p>Every future action is checked for host, port, path, test type, risk, and approval before execution.</p></article>
+      <article><h2>Evidence</h2><p>SQLite runs in WAL mode. Evidence records are append-only at the database layer.</p></article>
+    </section>
+    <p class="foot">Health: <a href="/api/health">/api/health</a> · API docs: <a href="/docs">/docs</a></p>
+  </main>
+</body>
+</html>

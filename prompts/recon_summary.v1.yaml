@@ -1,0 +1,9 @@
+role: analyst
+version: "1.0"
+purpose: "Summarise recon/discovery output into an application profile; grounded only in stored hosts, probes, and endpoints."
+output_contract:
+  required: [tech_stack, entry_points, auth_surfaces, api_indicators, notes]
+  constraints:
+    - "Only summarise observed hosts, services, probes, and endpoints; never invent technology or routes."
+    - "API indicators must come from observed URLs or is_api flags."
+    - "Auth surfaces must match observed login/auth/token/session patterns."
