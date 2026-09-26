@@ -8,7 +8,7 @@ import pytest
 
 from app.core.db import connection, initialise_database
 from app.core.schemas import RunState
-from app.discovery.models import DiscoveryResult, DiscoveredEndpoint
+from app.discovery.models import DiscoveredEndpoint, DiscoveryResult
 from app.orchestrator.service import RunService
 from app.recon.models import ApplicationProfile, ReconResult
 

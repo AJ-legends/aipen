@@ -2,7 +2,6 @@ from pathlib import Path
 
 from app.discovery.parsers import parse_ffuf_json, parse_katana_jsonl
 
-
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
 

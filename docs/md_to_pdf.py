@@ -3,13 +3,18 @@ import re
 import sys
 from pathlib import Path
 
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import cm
-from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.colors import HexColor
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.units import cm
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-    Preformatted, PageBreak, KeepTogether,
+    PageBreak,
+    Paragraph,
+    Preformatted,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
 )
 
 SRC = Path(sys.argv[1])
@@ -180,7 +185,7 @@ def header_footer(canvas, doc):
 
 def first_page(canvas, doc):
     canvas.saveState()
-    w, h = A4
+    _w, h = A4
     canvas.setStrokeColor(ACCENT)
     canvas.setLineWidth(2)
     canvas.line(2 * cm, h - 3 * cm, 6 * cm, h - 3 * cm)

@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from app.api.routes import build_router
 from app.core.db import connection, initialise_database
 from app.core.schemas import RunState
-from app.discovery.models import DiscoveryResult, DiscoveredEndpoint
+from app.discovery.models import DiscoveredEndpoint, DiscoveryResult
 from app.orchestrator.service import RunService
 from app.recon.models import ApplicationProfile, ReconResult
 
@@ -83,14 +83,52 @@ def test_recon_discovery_endpoints(tmp_path: Path) -> None:
     client, run = _client(tmp_path)
     resp = client.post(f"/api/runs/{run.id}/recon", json={"base_url": BASE_URL})
     assert resp.status_code == 202, resp.text
+    assert resp.json()["state"] == "queued"
+    # TestClient runs background tasks synchronously, so the run has advanced.
+    assert client.get(f"/api/runs/{run.id}").json()["state"] == RunState.RECON.value
     resp = client.post(f"/api/runs/{run.id}/discovery", json={"base_url": BASE_URL})
     assert resp.status_code == 202, resp.text
-    assert resp.json()["state"] == RunState.SIGNALS.value
-    resp = client.get(f"/api/runs/{run.id}")
-    assert resp.status_code == 200
+    assert client.get(f"/api/runs/{run.id}").json()["state"] == RunState.SIGNALS.value
 
 
 def test_recon_invalid_state_conflict(tmp_path: Path) -> None:
     client, run = _client(tmp_path)
     resp = client.post(f"/api/runs/{run.id}/discovery", json={"base_url": BASE_URL})
     assert resp.status_code == 409
+
+
+def test_scope_patch_and_test_endpoint(tmp_path: Path) -> None:
+    client, run = _client(tmp_path)
+    target_id = run.target_id
+    widened = {**SCOPE, "allowed_test_types": ["recon", "discovery", "sqli", "xss"]}
+    resp = client.patch(f"/api/targets/{target_id}/scope", json=widened)
+    assert resp.status_code == 200, resp.text
+    assert "sqli" in resp.json()["scope"]["allowed_test_types"]
+    resp = client.post(f"/api/runs/{run.id}/recon", json={"base_url": BASE_URL})
+    assert resp.status_code == 202
+    resp = client.patch(f"/api/targets/{target_id}/scope", json=widened)
+    assert resp.status_code == 409
+    resp = client.post(f"/api/runs/{run.id}/discovery", json={"base_url": BASE_URL})
+    assert resp.status_code == 202
+    resp = client.post(f"/api/runs/{run.id}/test", json={"modules": ["xss"], "max_probes": 5})
+    assert resp.status_code == 202, resp.text
+    assert client.get(f"/api/runs/{run.id}").json()["state"] == RunState.VERIFY.value
+    resp = client.get(f"/api/targets/{target_id}/evidence", params={"run_id": str(run.id)})
+    assert resp.status_code == 200
+
+
+def test_signals_and_analyze_chain(tmp_path: Path) -> None:
+    client, run = _client(tmp_path)
+    target_id = run.target_id
+    client.post(f"/api/runs/{run.id}/recon", json={"base_url": BASE_URL})
+    client.post(f"/api/runs/{run.id}/discovery", json={"base_url": BASE_URL})
+    # Nuclei binary is absent in CI: route still accepts, failure is audited.
+    resp = client.post(f"/api/runs/{run.id}/signals", json={"base_url": BASE_URL})
+    assert resp.status_code == 202, resp.text
+    assert client.get(f"/api/runs/{run.id}").json()["state"] == RunState.SIGNALS.value
+    client.post(f"/api/runs/{run.id}/test", json={"modules": ["xss"], "max_probes": 5})
+    resp = client.post(f"/api/runs/{run.id}/analyze")
+    assert resp.status_code == 202, resp.text
+    assert client.get(f"/api/runs/{run.id}").json()["state"] == RunState.REPORTING.value
+    for view in ("hypotheses", "findings", "signals"):
+        assert client.get(f"/api/targets/{target_id}/{view}").status_code == 200

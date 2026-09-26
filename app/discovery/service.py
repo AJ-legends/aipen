@@ -1,9 +1,13 @@
 """Policy-gated discovery orchestration and endpoint inventory persistence."""
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 from urllib.parse import urlparse
 from uuid import UUID, uuid4
+
+from pydantic import HttpUrl
 
 from app.core.db import connection, json_value
 from app.core.schemas import DecisionType, ProposedAction, RiskTier, ScopeConfig
@@ -15,10 +19,17 @@ from app.recon.adapters import ToolCommand
 from app.recon.runner import ToolExecution, execute
 
 
+@dataclass(frozen=True, slots=True)
+class _TargetContext:
+    scope: ScopeConfig
+    hitl_enabled: bool
+
+
 class DiscoveryService:
-    def __init__(self, database_path: Path, artifacts_dir: Path) -> None:
+    def __init__(self, database_path: Path, artifacts_dir: Path, wordlist_dirs: tuple[Path, ...] | None = None) -> None:
         self.database_path = database_path
         self.artifacts_dir = artifacts_dir
+        self.wordlist_dirs = wordlist_dirs or (database_path.parent / "wordlists", Path("data/wordlists"))
 
     def katana(self, target_id: UUID, base_url: str, run_id: UUID | None = None) -> DiscoveryResult:
         target = self._load_target(target_id)
@@ -31,23 +42,23 @@ class DiscoveryService:
     def ffuf(self, target_id: UUID, base_url: str, wordlist_path: str, run_id: UUID | None = None) -> DiscoveryResult:
         target = self._load_target(target_id)
         self._assert_allowed(target_id, base_url, target)
-        execution = self._run_and_record("ffuf", FfufAdapter().build_command(base_url, wordlist_path), run_id)
+        execution = self._run_and_record("ffuf", FfufAdapter().build_command(base_url, wordlist_path, self.wordlist_dirs), run_id)
         endpoints = parse_ffuf_json(execution.stdout)
         self._save_endpoints(target_id, endpoints)
         return DiscoveryResult(endpoints=endpoints, warnings=self._warnings(execution))
 
-    def _load_target(self, target_id: UUID) -> dict[str, object]:
+    def _load_target(self, target_id: UUID) -> _TargetContext:
         with connection(self.database_path) as db:
             row = db.execute("SELECT scope_config, hitl_enabled, archived FROM targets WHERE id = ?", (str(target_id),)).fetchone()
         if row is None:
             raise LookupError("Target does not exist.")
         if row["archived"]:
             raise ValueError("Archived targets cannot be scanned.")
-        return {"scope": ScopeConfig.model_validate(json.loads(row["scope_config"])), "hitl_enabled": bool(row["hitl_enabled"])}
+        return _TargetContext(scope=ScopeConfig.model_validate(json.loads(row["scope_config"])), hitl_enabled=bool(row["hitl_enabled"]))
 
-    def _assert_allowed(self, target_id: UUID, base_url: str, target: dict[str, object]) -> None:
-        action = ProposedAction(target_url=base_url, path=urlparse(base_url).path or "/", test_type="discovery", risk_tier=RiskTier.LOW)
-        decision = check_action(action, target["scope"], bool(target["hitl_enabled"]))  # type: ignore[arg-type]
+    def _assert_allowed(self, target_id: UUID, base_url: str, target: _TargetContext) -> None:
+        action = ProposedAction(target_url=cast(HttpUrl, base_url), path=urlparse(base_url).path or "/", test_type="discovery", risk_tier=RiskTier.LOW)
+        decision = check_action(action, target.scope, target.hitl_enabled)
         with connection(self.database_path) as db:
             db.execute("INSERT INTO audit_log (ts, actor, event, detail) VALUES (?, ?, ?, ?)", (datetime.now(UTC).isoformat(), "system", "policy_decision", json_value({"target_id": str(target_id), "action_id": str(action.id), "decision": decision.decision.value, "reason": decision.reason})))
         if decision.decision is not DecisionType.ALLOW:

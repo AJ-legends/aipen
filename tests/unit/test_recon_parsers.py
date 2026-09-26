@@ -2,7 +2,6 @@ from pathlib import Path
 
 from app.recon.parsers import parse_httpx_jsonl, parse_nmap_xml
 
-
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
 

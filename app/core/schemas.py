@@ -104,3 +104,85 @@ class AppProfile(BaseModel):
     model: str | None = None
     prompt_version: str
     created_at: datetime
+
+
+class TestAction(BaseModel):
+    id: UUID
+    run_id: UUID | None = None
+    target_id: UUID
+    hypothesis_id: UUID | None = None
+    type: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    risk_tier: RiskTier
+    policy_decision: DecisionType
+    approval_state: str = "pending"
+    executed_at: datetime
+
+
+class HypothesisStatus(StrEnum):
+    OPEN = "open"
+    VERIFIED = "verified"
+    REJECTED = "rejected"
+    STALE = "stale"
+
+
+class VerificationVote(StrEnum):
+    CONFIRM = "confirm"
+    REJECT = "reject"
+    UNCERTAIN = "uncertain"
+
+
+class Signal(BaseModel):
+    id: UUID
+    run_id: UUID | None = None
+    target_id: UUID
+    endpoint_url: str
+    tool: str
+    template_id: str | None = None
+    name: str
+    severity_hint: str | None = None
+    raw_ref: str | None = None
+    created_at: datetime
+
+
+class Hypothesis(BaseModel):
+    id: UUID
+    run_id: UUID | None = None
+    target_id: UUID
+    endpoint_url: str
+    vuln_class: str
+    rationale: str
+    confidence: float = 0.0
+    author: str
+    prompt_version: str
+    status: HypothesisStatus = HypothesisStatus.OPEN
+    evidence_ids: list[UUID] = Field(default_factory=list)
+    followups: int = 0
+    created_at: datetime
+
+
+class Verification(BaseModel):
+    id: UUID
+    hypothesis_id: UUID
+    voter: str
+    vote: VerificationVote
+    reason: str
+    evidence_ids: list[UUID] = Field(default_factory=list)
+    created_at: datetime
+
+
+class Finding(BaseModel):
+    id: UUID
+    run_id: UUID | None = None
+    target_id: UUID
+    hypothesis_id: UUID
+    verification_id: UUID
+    title: str
+    severity: str
+    endpoint_url: str
+    description: str
+    repro: dict[str, Any] = Field(default_factory=dict)
+    impact: str = ""
+    remediation: str = ""
+    confidence: float = 0.0
+    created_at: datetime

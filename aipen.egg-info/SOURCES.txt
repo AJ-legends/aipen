@@ -16,6 +16,10 @@ app/core/config.py
 app/core/db.py
 app/core/schemas.py
 app/discovery/__init__.py
+app/discovery/adapters.py
+app/discovery/models.py
+app/discovery/parsers.py
+app/discovery/service.py
 app/evidence/__init__.py
 app/evidence/store.py
 app/orchestrator/__init__.py
@@ -28,6 +32,7 @@ app/recon/models.py
 app/recon/parsers.py
 app/recon/runner.py
 app/recon/service.py
+app/recon/summary.py
 app/reports/__init__.py
 app/signals/__init__.py
 app/testing/__init__.py

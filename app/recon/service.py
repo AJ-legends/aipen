@@ -1,18 +1,35 @@
 """Policy-gated, auditable reconnaissance orchestration."""
 import json
+import sqlite3
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 from urllib.parse import urlparse
 from uuid import UUID, uuid4
+
+from pydantic import HttpUrl
 
 from app.core.db import connection, json_value
 from app.core.schemas import DecisionType, ProposedAction, RiskTier, ScopeConfig
 from app.policy import check_action
 from app.recon.adapters import HttpxAdapter, NmapAdapter, ToolCommand
-from app.recon.models import ApplicationProfile, HttpProbeRecord, HostRecord, ReconResult, ServiceRecord
+from app.recon.models import (
+    ApplicationProfile,
+    HostRecord,
+    HttpProbeRecord,
+    ReconResult,
+    ServiceRecord,
+)
 from app.recon.parsers import parse_httpx_jsonl, parse_nmap_xml
 from app.recon.runner import ToolExecution, execute
 from app.recon.summary import build_profile
+
+
+@dataclass(frozen=True, slots=True)
+class _TargetContext:
+    scope: ScopeConfig
+    hitl_enabled: bool
 
 
 class ReconService:
@@ -25,9 +42,9 @@ class ReconService:
         hostname = urlparse(base_url).hostname
         if hostname is None:
             raise ValueError("Target URL has no hostname.")
-        command = NmapAdapter().build_command(hostname, target["scope"].allowed_ports)
-        action = ProposedAction(target_url=base_url, path="/", test_type="recon", risk_tier=RiskTier.LOW)
-        self._assert_allowed(target_id, action, target["scope"], target["hitl_enabled"])
+        command = NmapAdapter().build_command(hostname, target.scope.allowed_ports)
+        action = ProposedAction(target_url=cast(HttpUrl, base_url), path="/", test_type="recon", risk_tier=RiskTier.LOW)
+        self._assert_allowed(target_id, action, target.scope, target.hitl_enabled)
         execution = self._run_and_record(target_id, "nmap", command, run_id)
         hosts = parse_nmap_xml(execution.stdout)
         self._save_hosts(target_id, hosts)
@@ -36,8 +53,8 @@ class ReconService:
     def httpx(self, target_id: UUID, base_url: str, run_id: UUID | None = None) -> ReconResult:
         target = self._load_target(target_id)
         command = HttpxAdapter().build_command(base_url)
-        action = ProposedAction(target_url=base_url, path=urlparse(base_url).path or "/", test_type="recon", risk_tier=RiskTier.LOW)
-        self._assert_allowed(target_id, action, target["scope"], target["hitl_enabled"])
+        action = ProposedAction(target_url=cast(HttpUrl, base_url), path=urlparse(base_url).path or "/", test_type="recon", risk_tier=RiskTier.LOW)
+        self._assert_allowed(target_id, action, target.scope, target.hitl_enabled)
         execution = self._run_and_record(target_id, "httpx", command, run_id)
         probes = parse_httpx_jsonl(execution.stdout)
         self._save_probes(target_id, probes)
@@ -84,7 +101,24 @@ class ReconService:
                 )
                 for row in endpoint_rows
             )
-        profile = build_profile(tuple(hosts), (), endpoints)
+            try:
+                probe_rows = db.execute(
+                    "SELECT url, status_code, title, webserver, technologies FROM http_probes WHERE target_id = ?",
+                    (str(target_id),),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                probe_rows = []
+            probes = tuple(
+                HttpProbeRecord(
+                    url=row["url"],
+                    status_code=row["status_code"],
+                    title=row["title"],
+                    webserver=row["webserver"],
+                    technologies=tuple(json.loads(row["technologies"])),
+                )
+                for row in probe_rows
+            )
+        profile = build_profile(tuple(hosts), probes, endpoints)
         created_at = datetime.now(UTC).isoformat()
         with connection(self.database_path) as db:
             db.execute(
@@ -111,14 +145,14 @@ class ReconService:
             )
         return profile
 
-    def _load_target(self, target_id: UUID) -> dict[str, object]:
+    def _load_target(self, target_id: UUID) -> _TargetContext:
         with connection(self.database_path) as db:
             row = db.execute("SELECT scope_config, hitl_enabled, archived FROM targets WHERE id = ?", (str(target_id),)).fetchone()
         if row is None:
             raise LookupError("Target does not exist.")
         if row["archived"]:
             raise ValueError("Archived targets cannot be scanned.")
-        return {"scope": ScopeConfig.model_validate(json.loads(row["scope_config"])), "hitl_enabled": bool(row["hitl_enabled"])}
+        return _TargetContext(scope=ScopeConfig.model_validate(json.loads(row["scope_config"])), hitl_enabled=bool(row["hitl_enabled"]))
 
     def _assert_allowed(self, target_id: UUID, action: ProposedAction, scope: ScopeConfig, hitl_enabled: bool) -> None:
         decision = check_action(action, scope, hitl_enabled)
@@ -169,6 +203,14 @@ class ReconService:
                     db.execute("INSERT INTO services (id, host_id, port, protocol, name, product, version, banner) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(host_id, port, protocol) DO UPDATE SET name = excluded.name, product = excluded.product, version = excluded.version, banner = excluded.banner", (str(uuid4()), row["id"], service.port, service.protocol, service.name, service.product, service.version, service.banner))
 
     def _save_probes(self, target_id: UUID, probes: tuple[HttpProbeRecord, ...]) -> None:
+        now = datetime.now(UTC).isoformat()
         with connection(self.database_path) as db:
             for probe in probes:
-                db.execute("INSERT INTO endpoints (id, target_id, url, method, is_api, source, first_seen) VALUES (?, ?, ?, 'GET', ?, 'httpx', ?) ON CONFLICT(target_id, url, method) DO NOTHING", (str(uuid4()), str(target_id), probe.url, int("/api/" in probe.url), datetime.now(UTC).isoformat()))
+                db.execute("INSERT INTO endpoints (id, target_id, url, method, is_api, source, first_seen) VALUES (?, ?, ?, 'GET', ?, 'httpx', ?) ON CONFLICT(target_id, url, method) DO NOTHING", (str(uuid4()), str(target_id), probe.url, int("/api/" in probe.url), now))
+                db.execute(
+                    "INSERT INTO http_probes (id, target_id, url, status_code, title, webserver, technologies, source, first_seen) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'httpx', ?) ON CONFLICT(target_id, url) DO UPDATE SET "
+                    "status_code = excluded.status_code, title = excluded.title, webserver = excluded.webserver, "
+                    "technologies = excluded.technologies, first_seen = excluded.first_seen",
+                    (str(uuid4()), str(target_id), probe.url, probe.status_code, probe.title, probe.webserver, json_value(list(probe.technologies)), now),
+                )

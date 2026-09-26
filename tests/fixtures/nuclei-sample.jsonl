@@ -1,0 +1,3 @@
+{"template-id":"http-missing-security-headers","info":{"name":"Missing Security Headers","severity":"medium"},"host":"https://app.example.test","matched-at":"https://app.example.test/","request":"GET / HTTP/1.1","response":"HTTP/1.1 200 OK"}
+{"template-id":"sqli-error-based","info":{"name":"SQL Injection (error-based)","severity":"high"},"host":"https://app.example.test","matched-at":"https://app.example.test/search?q=%27","request":"GET /search?q=' HTTP/1.1","response":"You have an error in your SQL syntax"}
+{"templateID":"xss-reflected","info":{"name":"Reflected XSS","severity":"medium"},"host":"https://app.example.test","matched-at":"https://app.example.test/search?q=aipenxss9"}
