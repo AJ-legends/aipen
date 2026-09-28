@@ -88,8 +88,8 @@ def test_diff_timing_adapts_to_slow_baseline() -> None:
     sluggish = CapturedResponse(url=BASE_URL, status_code=200, length=100, headers={}, body=b"hello", elapsed_ms=2000)
     modest = CapturedResponse(url=BASE_URL, status_code=200, length=100, headers={}, body=b"hello", elapsed_ms=4000)
     assert not TestExecutor.diff(sluggish, modest).timing_anomaly
-    доказательство = CapturedResponse(url=BASE_URL, status_code=200, length=100, headers={}, body=b"hello", elapsed_ms=9000)
-    assert TestExecutor.diff(sluggish, доказательство).timing_anomaly
+    delayed = CapturedResponse(url=BASE_URL, status_code=200, length=100, headers={}, body=b"hello", elapsed_ms=9000)
+    assert TestExecutor.diff(sluggish, delayed).timing_anomaly
 
 
 def test_run_probe_records_evidence(tmp_path: Path) -> None:

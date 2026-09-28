@@ -10,7 +10,7 @@ PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS targets (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, base_urls TEXT NOT NULL,
     scope_config TEXT NOT NULL, hitl_enabled INTEGER NOT NULL, budget_cap_usd REAL NOT NULL,
-    created_at TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0
+    created_at TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0, sessions TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY, target_id TEXT NOT NULL REFERENCES targets(id), state TEXT NOT NULL,
@@ -102,20 +102,67 @@ CREATE TABLE IF NOT EXISTS cost_ledger (
 );
 CREATE TRIGGER IF NOT EXISTS finding_needs_confirm BEFORE INSERT ON findings
 BEGIN
-    SELECT CASE WHEN NEW.verification_id NOT IN (SELECT id FROM verifications WHERE vote = 'confirm')
-    THEN RAISE(ABORT, 'Findings require a CONFIRM verification') END;
+    -- I1: exactly one CONFIRM verification, belonging to this hypothesis, citing >=1 evidence row.
+    SELECT CASE WHEN NEW.verification_id NOT IN (
+        SELECT id FROM verifications
+        WHERE vote = 'confirm'
+          AND hypothesis_id = NEW.hypothesis_id
+          AND json_array_length(evidence_ids) > 0
+          AND EXISTS (SELECT 1 FROM evidence WHERE id IN (SELECT value FROM json_each(evidence_ids)))
+    )
+    THEN RAISE(ABORT, 'Findings require a CONFIRM verification for this hypothesis with cited evidence') END;
 END;
 CREATE TRIGGER IF NOT EXISTS evidence_no_update BEFORE UPDATE ON evidence
 BEGIN SELECT RAISE(ABORT, 'Evidence is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS evidence_no_delete BEFORE DELETE ON evidence
 BEGIN SELECT RAISE(ABORT, 'Evidence is append-only'); END;
+CREATE TABLE IF NOT EXISTS approvals (
+    id TEXT PRIMARY KEY, run_id TEXT REFERENCES runs(id), target_id TEXT NOT NULL REFERENCES targets(id),
+    test_action_id TEXT REFERENCES test_actions(id), action TEXT NOT NULL DEFAULT '{}',
+    risk_tier TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', expected_effect TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'pending', decided_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_approvals_run ON approvals(run_id);
+CREATE INDEX IF NOT EXISTS idx_approvals_state ON approvals(state);
+CREATE TABLE IF NOT EXISTS oob_callbacks (
+    id TEXT PRIMARY KEY, token TEXT NOT NULL, source_ip TEXT, received_at TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_oob_token ON oob_callbacks(token);
 """
+
+# Additive migrations for databases created before a column existed.
+# Only ADD COLUMN is used here; destructive migrations are out of scope.
+MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+    ("targets", "sessions", "TEXT NOT NULL DEFAULT '[]'"),
+)
+
+
+def ensure_column(path: Path, table: str, column: str, definition: str) -> bool:
+    """Add a column if missing. Returns True when the schema changed."""
+    with sqlite3.connect(path) as database:
+        existing = {row[1] for row in database.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column in existing:
+            return False
+        database.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        return True
 
 
 def initialise_database(path: Path) -> None:
+    import os
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as connection:
-        connection.executescript(SCHEMA)
+    with sqlite3.connect(path) as database:
+        database.executescript(SCHEMA)
+    for table, column, definition in MIGRATIONS:
+        ensure_column(path, table, column, definition)
+    # Session headers live in targets.sessions: owner-only file mode. Best
+    # effort on Windows; enforced on POSIX. Full-disk encryption stays the
+    # operator control for findings data (see docs, §9.4 equivalent).
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
 
 @contextmanager

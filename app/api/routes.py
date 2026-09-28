@@ -3,9 +3,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, HttpUrl
 
+from app.approvals.service import ApprovalService
 from app.core.db import connection, json_value
 from app.core.schemas import AppProfile, RunState, ScopeConfig, TargetCreate, TargetSummary
 from app.orchestrator import RunService
@@ -24,12 +26,20 @@ class DiscoveryRequest(BaseModel):
 
 from typing import Literal
 
-TestModule = Literal["sqli", "xss"]
+TestModule = Literal["sqli", "xss", "idor", "ssrf", "api"]
 
 
 class TestRequest(BaseModel):
     modules: list[TestModule] = ["sqli", "xss"]
     max_probes: int = Field(default=20, ge=1, le=200)
+
+
+class ApprovalDecision(BaseModel):
+    approved: bool
+
+
+class AnalyzeRequest(BaseModel):
+    use_ai: bool = False
 
 
 def build_router(database_path: Path) -> APIRouter:
@@ -53,7 +63,8 @@ def build_router(database_path: Path) -> APIRouter:
         created_at = datetime.now(UTC)
         base_urls = [str(url) for url in payload.base_urls]
         with connection(database_path) as db:
-            db.execute("INSERT INTO targets (id, name, base_urls, scope_config, hitl_enabled, budget_cap_usd, created_at, archived) VALUES (?, ?, ?, ?, ?, ?, ?, 0)", (str(target_id), payload.name, json_value(base_urls), json_value(payload.scope.model_dump()), int(payload.hitl_enabled), payload.budget_cap_usd, created_at.isoformat()))
+            # The sessions column is guaranteed by initialise_database + MIGRATIONS.
+            db.execute("INSERT INTO targets (id, name, base_urls, scope_config, hitl_enabled, budget_cap_usd, created_at, archived, sessions) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)", (str(target_id), payload.name, json_value(base_urls), json_value(payload.scope.model_dump()), int(payload.hitl_enabled), payload.budget_cap_usd, created_at.isoformat(), json_value([session.model_dump() for session in payload.sessions])))
             db.execute("INSERT INTO audit_log (ts, actor, event, detail) VALUES (?, ?, ?, ?)", (created_at.isoformat(), "operator", "target_created", json_value({"target_id": str(target_id)})))
         return TargetSummary(id=target_id, name=payload.name, base_urls=base_urls, archived=False, created_at=created_at)
 
@@ -92,6 +103,41 @@ def build_router(database_path: Path) -> APIRouter:
             return runs.get_run(run_id).model_dump(mode="json")
         except LookupError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
+
+    @router.get("/runs/{run_id}/events")
+    async def run_events(run_id: UUID) -> StreamingResponse:
+        import asyncio
+        import json as jsonlib
+        from collections.abc import AsyncIterator
+
+        try:
+            runs.get_run(run_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        needle = str(run_id)
+
+        async def _stream() -> AsyncIterator[str]:
+            cursor = 0
+            with connection(database_path) as db:
+                first = db.execute("SELECT COALESCE(MAX(id), 0) AS top FROM audit_log").fetchone()
+                cursor = int(first["top"]) if first else 0
+            yield "event: ready\ndata: connected\n\n"
+            while True:
+                with connection(database_path) as db:
+                    rows = db.execute("SELECT id, ts, actor, event, detail FROM audit_log WHERE id > ? ORDER BY id LIMIT 50", (cursor,)).fetchall()
+                for row in rows:
+                    cursor = int(row["id"])
+                    if needle not in str(row["detail"]):
+                        continue
+                    try:
+                        detail = jsonlib.loads(row["detail"])
+                    except ValueError:
+                        detail = {}
+                    line = f"{row['ts']} {row['actor']}/{row['event']} {jsonlib.dumps(detail)[:220]}"
+                    yield f"data: {line}\n\n"
+                await asyncio.sleep(1.5)
+
+        return StreamingResponse(_stream(), media_type="text/event-stream")
 
     @router.post("/runs/{run_id}/recon", status_code=status.HTTP_202_ACCEPTED)
     def start_recon(run_id: UUID, payload: ReconRequest, background: BackgroundTasks) -> dict[str, object]:
@@ -152,6 +198,56 @@ def build_router(database_path: Path) -> APIRouter:
         background.add_task(_do_testing)
         return {"run_id": str(run_id), "state": "queued", "phase": RunState.ACT.value}
 
+    @router.post("/runs/{run_id}/test/continue", status_code=status.HTTP_202_ACCEPTED)
+    def continue_testing(run_id: UUID, background: BackgroundTasks) -> dict[str, object]:
+        try:
+            run = runs.get_run(run_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        if run.state is not RunState.PAUSED:
+            raise HTTPException(status_code=409, detail=f"Continue requires PAUSED state, run is {run.state.value}.")
+
+        def _do_continue() -> None:
+            try:
+                runs.continue_testing(run_id)
+            except Exception:
+                logger.exception("Background test-continue failed for run %s", run_id)
+
+        background.add_task(_do_continue)
+        return {"run_id": str(run_id), "state": "queued", "phase": RunState.ACT.value}
+
+    @router.get("/approvals")
+    def list_approvals(run_id: UUID | None = None) -> list[dict[str, object]]:
+        import json
+
+        service = ApprovalService(database_path)
+        pending = service.pending(run_id)
+        return [{**item, "action": json.loads(str(item["action"]))} for item in pending]
+
+    @router.post("/approvals/{approval_id}/decision")
+    def decide_approval(approval_id: UUID, payload: ApprovalDecision) -> dict[str, object]:
+        service = ApprovalService(database_path)
+        try:
+            state = service.decide(approval_id, payload.approved)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {"approval_id": str(approval_id), "state": state.value}
+
+    @router.post("/oob/{token}", status_code=status.HTTP_202_ACCEPTED)
+    def record_oob(token: str, request: Request) -> dict[str, object]:
+        if not token or len(token) > 128 or any(char.isspace() for char in token):
+            raise HTTPException(status_code=422, detail="Invalid token.")
+        source_ip = request.client.host if request.client else None
+        now = datetime.now(UTC).isoformat()
+        with connection(database_path) as db:
+            db.execute(
+                "INSERT INTO oob_callbacks (id, token, source_ip, received_at, detail) VALUES (?, ?, ?, ?, ?)",
+                (str(uuid4()), token, source_ip, now, json_value({"path": str(request.url.path)})),
+            )
+        return {"token": token, "received_at": now}
+
     @router.get("/targets/{target_id}/evidence")
     def list_evidence(target_id: UUID, run_id: UUID | None = None) -> list[dict[str, object]]:
         import json
@@ -208,22 +304,23 @@ def build_router(database_path: Path) -> APIRouter:
         return {"run_id": str(run_id), "state": "queued", "phase": RunState.SIGNALS.value}
 
     @router.post("/runs/{run_id}/analyze", status_code=status.HTTP_202_ACCEPTED)
-    def start_analysis(run_id: UUID, background: BackgroundTasks) -> dict[str, object]:
+    def start_analysis(run_id: UUID, background: BackgroundTasks, payload: AnalyzeRequest | None = None) -> dict[str, object]:
         try:
             run = runs.get_run(run_id)
         except LookupError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         if run.state is not RunState.VERIFY:
             raise HTTPException(status_code=409, detail=f"Analysis requires VERIFY state, run is {run.state.value}.")
+        use_ai = payload.use_ai if payload is not None else False
 
         def _do_analysis(target_run_id: UUID) -> None:
             try:
-                runs.start_analysis(target_run_id)
+                runs.start_analysis(target_run_id, use_ai=use_ai)
             except Exception:
                 logger.exception("Background analysis failed for run %s", target_run_id)
 
         background.add_task(_do_analysis, run_id)
-        return {"run_id": str(run_id), "state": "queued", "phase": RunState.ANALYZE.value}
+        return {"run_id": str(run_id), "state": "queued", "phase": RunState.ANALYZE.value, "use_ai": use_ai}
 
     @router.get("/targets/{target_id}/hypotheses")
     def list_hypotheses(target_id: UUID, run_id: UUID | None = None) -> list[dict[str, object]]:

@@ -97,6 +97,17 @@ def test_recon_invalid_state_conflict(tmp_path: Path) -> None:
     assert resp.status_code == 409
 
 
+def test_test_rejects_unknown_module(tmp_path: Path) -> None:
+    client, run = _client(tmp_path)
+    client.post(f"/api/runs/{run.id}/recon", json={"base_url": BASE_URL})
+    client.post(f"/api/runs/{run.id}/discovery", json={"base_url": BASE_URL})
+    client.post(f"/api/runs/{run.id}/test", json={"modules": ["xss"], "max_probes": 5})
+    resp = client.post(f"/api/runs/{run.id}/test", json={"modules": ["rce"], "max_probes": 5})
+    assert resp.status_code == 422
+    resp = client.post(f"/api/runs/{run.id}/test", json={"modules": ["xss"], "max_probes": 0})
+    assert resp.status_code == 422
+
+
 def test_scope_patch_and_test_endpoint(tmp_path: Path) -> None:
     client, run = _client(tmp_path)
     target_id = run.target_id

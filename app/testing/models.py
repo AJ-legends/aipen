@@ -7,11 +7,13 @@ from pydantic import BaseModel, Field
 class Probe(BaseModel):
     """A single mutation to try against one parameter."""
 
-    module: str = Field(description="Originating module: sqli | xss")
-    kind: str = Field(description="Probe kind, e.g. error-based, time-based, reflected")
+    module: str = Field(description="Originating module: sqli | xss | idor | ssrf | api")
+    kind: str = Field(description="Probe kind, e.g. error-based, idor-sequential, ssrf-canary")
     param: str
     payload: str
     risk_tier: str = "low"
+    session: str | None = Field(default=None, description="Named target session for the mutated request")
+    strip_auth: bool = Field(default=False, description="Send the mutated request without session headers")
 
 
 class ProbePlan(BaseModel):

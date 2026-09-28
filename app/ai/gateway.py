@@ -9,7 +9,11 @@ import httpx
 
 from app.ai.config import AIConfig, estimate_usd, load_config
 from app.ai.roles import AIRole
-from app.ai.router import candidates_for, downgrade_on_budget_pressure, resolve_model  # noqa: F401  # resolve_model re-exported
+from app.ai.router import (  # noqa: F401  # resolve_model re-exported
+    candidates_for,
+    downgrade_on_budget_pressure,
+    resolve_model,
+)
 from app.core.db import connection, json_value
 
 __all__ = ["AIGateway", "AIRole", "BudgetContext"]

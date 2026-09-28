@@ -45,16 +45,48 @@
   only, never logged) with cross-provider verifier routing (R2), JSON validation +
   1 retry, per-call cost ledger and 70%-of-global-budget downgrade, orchestrator
   `SIGNALS→(signals)→ACT→VERIFY→ANALYZE→REPORTING`, `POST /runs/{id}/signals|analyze`
-  (queued) and `GET hypotheses|findings|signals`. 42 tests passing; `ruff check .`
+  (queued) and   `GET hypotheses|findings|signals`. 42 tests passing; `ruff check .`
   and `mypy app` (strict) clean.
+- Issue-resolution pass (no S5 required): gateway R4 (one backoff retry on
+  429/5xx/transport errors, then fallback down the role chain with a
+  `provider_fallback` audit row), strict `TestRequest` validation (known modules
+  only, `max_probes` 1–200, else 422), repo-root `.env` loading via python-dotenv
+  (real env still wins; `.env` stays gitignored), adaptive timing threshold
+  (`max(1500ms, 3x baseline)` so slow hosts stop false-positiving time probes).
+  46 tests passing; `ruff check .` and `mypy app` (strict) clean.
+- S5 completion (M5 product): `approvals` + `oob_callbacks` tables, `targets.sessions`
+  via additive `ensure_column()` migrator, `ApprovalService` (request/decide/pending),
+  HITL in `TestingService` (NEEDS_APPROVAL → approval row + skip; `PAUSED` runs resume
+  via `continue_testing` → `execute_approved`), IDOR module (sequential/unauth +
+  two-session cross-account, MEDIUM), SSRF module (tokenized canaries, localhost
+  `POST /api/oob/{token}` listener, callback-only CONFIRM), API module (BOLA-query,
+  verbose-errors, unauthenticated, HITL-gated mass-assignment indicators), pure risk
+  classifier, session-aware executor (names persist, header secrets stay in memory),
+  analyst/verifier/loop branches for idor/ssrf/api, operator dashboard (targets, run
+  pipeline, approvals queue, findings/hypotheses, SSE decision log),
+  `POST /runs/{id}/test/continue`, `GET /approvals`, `POST /approvals/{id}/decision`,
+  strict `TestRequest` modules, adaptive timing already landed.   54 tests passing;
+  `ruff check .` and `mypy app` (strict) clean.
+- Review-fix pass: approved probes now rebuild with original kind/session/strip_auth/
+  risk and re-check current policy (DENY skips, approval satisfies NEEDS_APPROVAL);
+  `finding_needs_confirm` trigger also enforces same-hypothesis + cited-evidence;
+  DB file 0600 + backups dir 0700 (full-disk encryption stays the operator control);
+  loop wired to the gateway behind opt-in `use_ai` (validated AI drafts/votes, model
+  authors tracked for R2, per-run budget from target cap, deterministic fallback);
+  Juice Shop bound to 127.0.0.1; README rewritten for the current system.
+- Kali transfer bundle: `scripts/kali-setup.sh` (venv, deps, tool check, Juice Shop
+  via Docker, full test suite, `.env` guidance). Live AI validation moved to Kali
+  after Windows-network findings: `agentrouter.org` blackholes POST bodies from this
+  host (GETs fine), and its ALB needs `AIPEN_TLS_MAX=1.2` under Windows Store
+  Python's OpenSSL (opt-in `tls_verify_setting()`; system TLS by default).
 
-## Deliberately deferred
+## Deliberately deferred (S6 and beyond)
 
-HTTP test execution, payload libraries, AI-provider credentials/adapters, model routing, approval
-queue UI, reporting, and live event streaming are later sprint work (S3+).
+Report engine (Markdown/HTML/JSON exports), full Juice Shop benchmark with §8
+metrics, false-positive tuning, and the v1.0 release tag. Live model-backed
+loop validation on Kali (Windows host blackholes the provider's POST path).
 
 ## Validation note
 
-The project host did not expose a `python` executable or Python launcher at scaffold time, so
-runtime tests could not be executed here. Once Python 3.12 is installed, follow the commands in
-the repository README and run `pytest -q`.
+`pytest -q`, `ruff check .`, and `mypy app` (strict) run green in the project
+venv on every change; see the per-phase entries above for counts.

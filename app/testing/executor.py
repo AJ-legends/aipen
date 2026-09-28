@@ -81,12 +81,12 @@ class TestExecutor:
             headers={"User-Agent": "AIPEN-test-executor/0.1"},
         )
 
-    async def fetch(self, url: str, params: dict[str, str] | None = None) -> CapturedResponse:
+    async def fetch(self, url: str, params: dict[str, str] | None = None, headers: dict[str, str] | None = None) -> CapturedResponse:
         host = urlparse(url).hostname or ""
         await self.limiter.acquire(host)
         started = time.perf_counter()
         async with self._client() as client:
-            response = await client.get(url, params=params)
+            response = await client.get(url, params=params, headers=headers)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         body = response.content[:MAX_BODY_BYTES]
         return CapturedResponse(
@@ -124,9 +124,11 @@ class TestExecutor:
         baseline_value: str,
         probe: Probe,
         markers: tuple[str, ...] = (),
+        baseline_headers: dict[str, str] | None = None,
+        mutated_headers: dict[str, str] | None = None,
     ) -> ProbeOutcome:
-        baseline = await self.fetch(url, params={param: baseline_value} if param else None)
-        mutated = await self.fetch(url, params={param: probe.payload} if param else None)
+        baseline = await self.fetch(url, params={param: baseline_value} if param else None, headers=baseline_headers)
+        mutated = await self.fetch(url, params={param: probe.payload} if param else None, headers=mutated_headers)
         outcome_diff = self.diff(baseline, mutated, markers)
         signals: list[str] = []
         if outcome_diff.markers:

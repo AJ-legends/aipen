@@ -49,12 +49,20 @@ class ScopeConfig(BaseModel):
         return [value.lower().strip().rstrip(".") for value in values]
 
 
+class Session(BaseModel):
+    """A named auth session (headers) for cross-account testing. Secrets stay server-side."""
+
+    name: str = Field(min_length=1, max_length=60)
+    headers: dict[str, str] = Field(default_factory=dict)
+
+
 class TargetCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     base_urls: list[HttpUrl] = Field(min_length=1)
     scope: ScopeConfig
     hitl_enabled: bool = True
     budget_cap_usd: float = Field(default=0.50, gt=0, le=100)
+    sessions: list[Session] = Field(default_factory=list, max_length=5)
 
 
 class TargetSummary(BaseModel):
@@ -186,3 +194,22 @@ class Finding(BaseModel):
     remediation: str = ""
     confidence: float = 0.0
     created_at: datetime
+
+
+class ApprovalState(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class Approval(BaseModel):
+    id: UUID
+    run_id: UUID | None = None
+    target_id: UUID
+    test_action_id: UUID | None = None
+    action: dict[str, Any] = Field(default_factory=dict)
+    risk_tier: RiskTier
+    reason: str = ""
+    expected_effect: str = ""
+    state: ApprovalState = ApprovalState.PENDING
+    decided_at: datetime | None = None

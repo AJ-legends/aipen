@@ -15,7 +15,7 @@ class AIConfig:
     """All values overridable via environment; no secrets stored here."""
 
     api_key: str = ""
-    base_url: str = "https://api.agentrouter.ai/v1"
+    base_url: str = "https://agentrouter.org/v1"
     volume_model: str = "deepseek-chat"
     premium_model: str = "claude-3-5-sonnet-latest"
     verify_models: tuple[str, ...] = ("deepseek-chat", "claude-3-5-sonnet-latest", "gpt-4o-mini")
@@ -39,7 +39,7 @@ def load_config() -> AIConfig:
         timeout = 90.0
     return AIConfig(
         api_key=os.environ.get("AGENTROUTER_API_KEY", ""),
-        base_url=os.environ.get("AGENTROUTER_BASE_URL", "https://api.agentrouter.ai/v1"),
+        base_url=os.environ.get("AGENTROUTER_BASE_URL", "https://agentrouter.org/v1"),
         volume_model=os.environ.get("AIPEN_VOLUME_MODEL", "deepseek-chat"),
         premium_model=os.environ.get("AIPEN_PREMIUM_MODEL", "claude-3-5-sonnet-latest"),
         verify_models=_models("AIPEN_VERIFY_MODELS", "deepseek-chat,claude-3-5-sonnet-latest,gpt-4o-mini"),

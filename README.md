@@ -2,11 +2,11 @@
 
 AIPEN is a local, single-operator platform for evidence-led web-application security testing.
 
-The scaffold implements the Phase 1 safety boundary and application shell. It deliberately does
-**not** execute scanners or active test payloads yet. Every future outbound action must pass the
-policy engine first.
+Every outbound action — scans, probes, and AI calls — passes a deterministic policy
+engine first, is recorded in an append-only audit log, and only becomes a finding
+after independent verification against stored evidence. **No evidence, no finding.**
 
-## Run locally
+## Run locally (Windows dev)
 
 ```powershell
 py -3.12 -m venv .venv
@@ -17,23 +17,47 @@ uvicorn app.main:app --reload
 
 Open `http://127.0.0.1:8000`. The server binds to localhost by default.
 
+## Run on Kali (production)
+
+See `scripts/kali-setup.sh` — one-shot setup (venv, deps, tool check, Juice Shop,
+test suite), then create `.env` with `AGENTROUTER_API_KEY` (never commit it):
+
+```bash
+bash scripts/kali-setup.sh
+nano .env   # AGENTROUTER_API_KEY=<key>
+.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+## Pipeline
+
+Create a target → run `recon` → `discovery` → `signals` → `test` → (approve
+medium-risk probes) → `continue` → `analyze` (add `use_ai: true` to spend model
+budget) → findings. All long phases run as background jobs; poll `GET /runs/{id}`.
+
 ## Current structure
 
-- `app/policy` — deterministic scope, risk, approval, and rate-limit decision logic.
-- `app/orchestrator` — persisted run state and safe phase transition skeleton.
-- `app/evidence` — SQLite schema and append-only audit/evidence store foundation.
-- `app/ai` — provider-neutral roles, budget guard, and no-network gateway contract.
-- `app/api` — FastAPI JSON API and minimal server-rendered dashboard.
-- `app/recon` — policy-gated Nmap/httpx command builders, bounded tool runner, parsers, and persistence.
-- `app/discovery` — policy-gated Katana/ffuf command builders, parsers, and endpoint inventory storage.
-- `app/{signals,testing}` — adapter/module boundaries, intentionally inert.
+- `app/policy` — deterministic scope, risk, approval, and rate-limit decisions (pure).
+- `app/orchestrator` — persisted run state machine through `REPORTING`, with pause/resume.
+- `app/evidence` — SQLite schema, append-only store, and audit helpers.
+- `app/ai` — AgentRouter provider adapter (budget/routing/ledger), deterministic
+  analyst/verifier, and the hypothesis → verification → finding loop service.
+- `app/api` — FastAPI JSON API, operator dashboard, approvals queue, SSE decision log.
+- `app/recon` — policy-gated Nmap/httpx adapters, bounded runner, parsers, persistence.
+- `app/discovery` — policy-gated Katana/ffuf adapters, parsers, endpoint inventory.
+- `app/signals` — policy-gated Nuclei ingestion (signals seed hypotheses, never findings).
+- `app/testing` — differential HTTP executor, SQLi/XSS/IDOR/SSRF/API modules, sqlmap
+  escalation, HITL approvals integration.
+- `app/approvals` — human-in-the-loop approval queue.
 - `prompts` — versioned structured-output prompt contracts.
 
-See `docs/AIPEN-Project-Requirements-and-Design.md` for the approved design.
+See `docs/AIPEN-Project-Requirements-and-Design.md` for the approved design and
+`docs/IMPLEMENTATION-STATUS.md` for the delivery log.
 
-## Reconnaissance safety contract
+## Safety contracts
 
-Reconnaissance is available only through `ReconService`. It checks the selected target's stored
-scope before a command is built or executed, records the policy decision, uses a fixed argument
-list (never a shell command), applies time/output caps, stores raw output as an artifact, and
-persists only parsed host/service/HTTP metadata. It is not exposed as a web endpoint yet.
+- **Policy first:** every tool invocation and test probe is checked against the
+  target's stored scope; denials and approvals are written to `audit_log`.
+- **Evidence is append-only** (SQLite triggers); corrections are new linked records.
+- **Findings require a CONFIRM verification** citing real evidence (DB trigger + service).
+- **Secrets:** API keys come from the environment only; session headers are stored
+  with owner-only file permissions — full-disk encryption remains the operator control.

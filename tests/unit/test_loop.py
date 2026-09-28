@@ -212,3 +212,121 @@ def test_gateway_guards(tmp_path: Path) -> None:
         AIGateway(db_path, AIConfig()).generate(AIRole.ANALYST, "p", {"required": ["a"]}, BudgetContext(0.5, 0.0))
     with pytest.raises(RuntimeError):
         _gateway(db_path).generate(AIRole.ANALYST, "p", {"required": ["a"]}, BudgetContext(0.5, 0.5))
+
+
+def test_gateway_backoff_retry_then_success(tmp_path: Path) -> None:
+    from app.ai import providers as provider_adapter
+
+    db_path = tmp_path / "aipen.db"
+    initialise_database(db_path)
+    gateway = _gateway(db_path)
+    budget = BudgetContext(run_budget_usd=0.50, spent_usd=0.0)
+    with respx.mock(base_url="https://gateway.test/v1") as mock:
+        route = mock.post("/chat/completions").mock(
+            side_effect=[
+                httpx.Response(429, json={"error": "busy"}),
+                httpx.Response(200, json=_completion('{"vote":"CONFIRM","reason":"r","evidence_ids":[]}')),
+            ]
+        )
+        result = gateway.generate(
+            AIRole.VERIFIER, "p", {"required": ["vote", "reason", "evidence_ids"]}, budget, transport=None
+        )
+    assert result["output"]["vote"] == "CONFIRM"
+    assert route.call_count == 2
+    assert provider_adapter.RETRYABLE_STATUS >= {429}
+
+
+def test_gateway_falls_back_and_audits(tmp_path: Path) -> None:
+    from app.ai.config import AIConfig
+
+    db_path = tmp_path / "aipen.db"
+    initialise_database(db_path)
+    config = AIConfig(api_key="test-key", base_url="https://gateway.test/v1", volume_model="deepseek-chat", premium_model="claude-x", verify_models=("deepseek-chat",))
+    gateway = AIGateway(db_path, config)
+    budget = BudgetContext(run_budget_usd=0.50, spent_usd=0.0)
+    with respx.mock(base_url="https://gateway.test/v1") as mock:
+        route = mock.post("/chat/completions").mock(
+            side_effect=[
+                httpx.Response(500, json={"error": "down"}),
+                httpx.Response(500, json={"error": "down"}),
+                httpx.Response(200, json=_completion('{"vote":"REJECT","reason":"r","evidence_ids":[]}')),
+            ]
+        )
+        result = gateway.generate(AIRole.ANALYST, "p", {"required": ["vote", "reason", "evidence_ids"]}, budget)
+    assert result["output"]["vote"] == "REJECT"
+    assert route.call_count == 3  # primary + backoff retry, then fallback model
+    with connection(db_path) as db:
+        audit = db.execute("SELECT detail FROM audit_log WHERE event = 'provider_fallback'").fetchone()
+    assert audit is not None and "deepseek-chat" in audit["detail"]
+
+
+def test_tls_verify_setting(monkeypatch: object) -> None:
+    import ssl
+
+    from app.ai.providers import tls_verify_setting
+
+    monkeypatch.delenv("AIPEN_TLS_MAX", raising=False)  # type: ignore[attr-defined]
+    assert tls_verify_setting() is True
+    monkeypatch.setenv("AIPEN_TLS_MAX", "1.2")  # type: ignore[attr-defined]
+    pinned = tls_verify_setting()
+    assert isinstance(pinned, ssl.SSLContext) and pinned.maximum_version is ssl.TLSVersion.TLSv1_2
+    monkeypatch.setenv("AIPEN_TLS_MAX", "bogus")  # type: ignore[attr-defined]
+    assert tls_verify_setting() is True
+
+
+def _ai_loop(db_path: Path, tmp_path: Path):  # type: ignore[no-untyped-def]
+    from app.ai.loop import LoopService
+
+    return LoopService(db_path, tmp_path / "artifacts", gateway=_gateway(db_path))
+
+
+def _ai_completion(content: str) -> dict[str, object]:
+    return {"model": "deepseek-chat", "choices": [{"message": {"content": content}}], "usage": {"prompt_tokens": 20, "completion_tokens": 10}}
+
+
+def test_ai_analyst_and_verifier_drive_findings(tmp_path: Path) -> None:
+    import asyncio
+
+    db_path = tmp_path / "aipen.db"
+    initialise_database(db_path)
+    target_id, run_id = _seed(db_path)
+    evidence_id = _seed_probe_evidence(db_path, run_id, target_id)
+    analyst_body = json.dumps({"hypotheses": [{"endpoint_url": BASE_URL, "vuln_class": "xss", "rationale": "echo?", "confidence": 0.6, "evidence_ids": [str(evidence_id)]}]})
+    verifier_body = json.dumps({"vote": "CONFIRM", "reason": "repro shown", "evidence_ids": [str(evidence_id)]})
+    with respx.mock(base_url="https://gateway.test/v1") as mock:
+        mock.post("/chat/completions").mock(
+            side_effect=[
+                httpx.Response(200, json=_ai_completion(analyst_body)),
+                httpx.Response(200, json=_ai_completion(verifier_body)),
+                httpx.Response(200, json=_ai_completion(verifier_body)),
+            ]
+        )
+        summary = asyncio.run(_ai_loop(db_path, tmp_path).analyze_run(run_id, use_ai=True))  # type: ignore[arg-type]
+    assert summary["verified"] == 2 and len(summary["findings"]) == 2
+    with connection(db_path) as db:
+        authors = {row["author"] for row in db.execute("SELECT author FROM hypotheses").fetchall()}
+        voters = {row["voter"] for row in db.execute("SELECT voter FROM verifications").fetchall()}
+        ledger = db.execute("SELECT COUNT(*) AS n FROM cost_ledger").fetchone()
+    assert "deepseek-chat" in authors and "deepseek-chat" in voters and ledger["n"] >= 3
+    assert "ai_notes" in summary
+
+
+def test_ai_invalid_draft_dropped_and_budget_gates(tmp_path: Path) -> None:
+    import asyncio
+
+    db_path = tmp_path / "aipen.db"
+    initialise_database(db_path)
+    target_id, run_id = _seed(db_path)
+    _seed_probe_evidence(db_path, run_id, target_id)
+    bad_body = json.dumps({"hypotheses": [{"endpoint_url": "https://evil.test/x", "vuln_class": "rce", "rationale": "trust me", "confidence": 0.99, "evidence_ids": [str(uuid4())]}]})
+    with respx.mock(base_url="https://gateway.test/v1") as mock:
+        mock.post("/chat/completions").mock(return_value=httpx.Response(200, json=_ai_completion(bad_body)))
+        summary = asyncio.run(_ai_loop(db_path, tmp_path).analyze_run(run_id, use_ai=True))  # type: ignore[arg-type]
+    # Bogus draft dropped; deterministic baseline still confirms the real one.
+    assert summary["verified"] == 1 and "dropped" in str(summary.get("ai_notes"))
+    # use_ai=False spends nothing and adds no ai_notes.
+    plain = asyncio.run(_ai_loop(db_path, tmp_path).analyze_run(run_id))
+    assert "ai_notes" not in plain
+    with connection(db_path) as db:
+        ledger = db.execute("SELECT COUNT(*) AS n FROM cost_ledger").fetchone()
+    assert ledger["n"] >= 1  # only the use_ai pass spent

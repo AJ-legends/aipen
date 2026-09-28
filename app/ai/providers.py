@@ -5,6 +5,8 @@ Retry policy (R4): one backoff retry on 429/5xx/transport errors, then the
 caller falls back to the next model in the role's chain.
 """
 import json
+import os
+import ssl
 import time
 from dataclasses import dataclass
 
@@ -13,6 +15,17 @@ import httpx
 from app.ai.config import AIConfig
 
 RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+VerifySetting = bool | ssl.SSLContext
+
+
+def tls_verify_setting() -> VerifySetting:
+    """System TLS by default; AIPEN_TLS_MAX=1.2 pins the ceiling for picky middleboxes."""
+    ceiling = os.environ.get("AIPEN_TLS_MAX", "").strip()
+    if ceiling not in ("1.2", "1.3"):
+        return True
+    context = ssl.create_default_context()
+    context.maximum_version = ssl.TLSVersion.TLSv1_2 if ceiling == "1.2" else ssl.TLSVersion.TLSv1_3
+    return context
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +75,7 @@ def complete(
     while True:
         attempts += 1
         try:
-            with httpx.Client(base_url=config.base_url, timeout=config.request_timeout_seconds, transport=transport) as client:
+            with httpx.Client(base_url=config.base_url, timeout=config.request_timeout_seconds, transport=transport, verify=tls_verify_setting()) as client:
                 response = client.post(
                     "/chat/completions",
                     headers={"Authorization": f"Bearer {config.api_key}"},  # key stays in the header; never logged

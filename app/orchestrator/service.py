@@ -1,6 +1,7 @@
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 from uuid import UUID, uuid4
 
 from app.ai.loop import LoopService
@@ -25,14 +26,18 @@ class RunService:
         testing: TestingService | None = None,
         signals: SignalService | None = None,
         loop: LoopService | None = None,
+        gateway: object | None = None,
     ) -> None:
+        from app.ai.gateway import AIGateway
+
         self.database_path = database_path
         self.artifacts_dir = artifacts_dir or (database_path.parent / "artifacts")
         self.recon = recon or ReconService(database_path, self.artifacts_dir)
         self.discovery = discovery or DiscoveryService(database_path, self.artifacts_dir)
         self.testing = testing or TestingService(database_path, self.artifacts_dir)
         self.signals = signals or SignalService(database_path, self.artifacts_dir)
-        self.loop = loop or LoopService(database_path, self.artifacts_dir, self.testing)
+        resolved_gateway = gateway if isinstance(gateway, AIGateway) else AIGateway(database_path)
+        self.loop = loop or LoopService(database_path, self.artifacts_dir, self.testing, resolved_gateway)
 
     def create_run(self, target_id: UUID) -> RunSummary:
         run_id = uuid4()
@@ -162,8 +167,9 @@ class RunService:
             raise ValueError(f"Testing requires SIGNALS state, run is {run.state.value}.")
         self.transition(run_id, RunState.ACT)
         try:
-            plans = self.testing.plans_for_run(run_id, modules)
+            plans, plan_warnings = self.testing.plans_for_run(run_id, modules)
             summary = asyncio.run(self.testing.run_plan(run_id, plans, max_probes))
+            summary["warnings"] = [*plan_warnings, *cast(list[str], summary.get("warnings", []))]
         except Exception as error:
             with connection(self.database_path) as db:
                 db.execute(
@@ -173,6 +179,32 @@ class RunService:
                         "system",
                         "run_failed",
                         json_value({"run_id": str(run_id), "phase": "testing", "error": str(error)}),
+                    ),
+                )
+            raise
+        if cast(int, summary.get("pending_approvals", 0)) > 0:
+            self.transition(run_id, RunState.PAUSED)
+            return {"run_id": str(run_id), "state": RunState.PAUSED.value, **summary}
+        self.transition(run_id, RunState.VERIFY)
+        return {"run_id": str(run_id), "state": RunState.VERIFY.value, **summary}
+
+    def continue_testing(self, run_id: UUID) -> dict[str, object]:
+        import asyncio
+
+        run = self.get_run(run_id)
+        if run.state is not RunState.PAUSED:
+            raise ValueError(f"Continue requires PAUSED state, run is {run.state.value}.")
+        try:
+            summary = asyncio.run(self.testing.execute_approved(run_id))
+        except Exception as error:
+            with connection(self.database_path) as db:
+                db.execute(
+                    "INSERT INTO audit_log (ts, actor, event, detail) VALUES (?, ?, ?, ?)",
+                    (
+                        datetime.now(UTC).isoformat(),
+                        "system",
+                        "run_failed",
+                        json_value({"run_id": str(run_id), "phase": "testing-continue", "error": str(error)}),
                     ),
                 )
             raise
@@ -199,7 +231,7 @@ class RunService:
             raise
         return {"run_id": str(run_id), "state": RunState.SIGNALS.value, "signals": len(result.signals), "warnings": list(result.warnings)}
 
-    def start_analysis(self, run_id: UUID) -> dict[str, object]:
+    def start_analysis(self, run_id: UUID, use_ai: bool = False) -> dict[str, object]:
         import asyncio
 
         run = self.get_run(run_id)
@@ -207,7 +239,7 @@ class RunService:
             raise ValueError(f"Analysis requires VERIFY state, run is {run.state.value}.")
         self.transition(run_id, RunState.ANALYZE)
         try:
-            summary = asyncio.run(self.loop.analyze_run(run_id))
+            summary = asyncio.run(self.loop.analyze_run(run_id, use_ai=use_ai))
         except Exception as error:
             with connection(self.database_path) as db:
                 db.execute(
@@ -228,6 +260,10 @@ class RunService:
             return
         backup_dir = self.database_path.parent / "backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            backup_dir.chmod(0o700)
+        except OSError:
+            pass
         destination = backup_dir / f"{run_id}.db"
         # Online backup API: safe against WAL checkpoints, unlike a file copy.
         source = sqlite3.connect(self.database_path)

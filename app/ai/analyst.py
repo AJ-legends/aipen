@@ -19,6 +19,10 @@ class EvidenceView:
     timing_anomaly: bool = False
     xss_context: str | None = None
     sqlmap_params: tuple[str, ...] = ()
+    probe_kind: str = ""
+    ssrf_token: str | None = None
+    status_changed: bool = False
+    length_delta: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +93,15 @@ def analyze_evidence(evidence: tuple[EvidenceView, ...], signals: tuple[SignalVi
             _add(item.endpoint_url, "xss", f"Canary reflected in {item.xss_context} context on param '{item.param}'", 0.6 if item.xss_context == "raw" else 0.5, item.id, None)
         elif item.module == "xss" and item.xss_context == "encoded":
             continue  # properly encoded: no hypothesis
+        elif item.module == "idor" and (item.status_changed or abs(item.length_delta) >= 50):
+            confidence = 0.65 if item.probe_kind == "cross-account" else 0.5
+            _add(item.endpoint_url, "idor", f"Neighbor-ID response differs ({item.probe_kind}) on param '{item.param}'", confidence, item.id, None)
+        elif item.module == "ssrf" and item.ssrf_token:
+            _add(item.endpoint_url, "ssrf", f"OOB canary sent for param '{item.param}'; awaiting callback", 0.3, item.id, None)
+        elif item.module == "api" and item.markers:
+            _add(item.endpoint_url, "api", f"Verbose error markers {sorted(item.markers)} on param '{item.param}'", 0.55, item.id, None)
+        elif item.module == "api" and (item.status_changed or abs(item.length_delta) >= 50):
+            _add(item.endpoint_url, "api", f"API response differs ({item.probe_kind}) on param '{item.param}'", 0.5, item.id, None)
     for signal in signals:
         vuln_class = _signal_class(signal.template_id, signal.name)
         if vuln_class is None:
