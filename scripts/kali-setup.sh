@@ -49,12 +49,24 @@ else
 fi
 
 echo "==> 6/6 Juice Shop benchmark target (Docker, detached)"
-if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^juice-shop$'; then
-  echo "  juice-shop already running"
+if ! command -v docker >/dev/null 2>&1; then
+  echo "  docker not found; attempting install (needs sudo)..."
+  sudo apt update && sudo apt install -y docker.io
+  sudo systemctl enable --now docker 2>/dev/null || true
+fi
+if docker ps --format '{{.Names}}' >/dev/null 2>&1; then
+  if docker ps --format '{{.Names}}' | grep -q '^juice-shop$'; then
+    echo "  juice-shop already running"
+  else
+    # Localhost-bound: this is a deliberately vulnerable app, never expose it.
+    docker run -d --rm --name juice-shop -p 127.0.0.1:3000:3000 bkimminich/juice-shop >/dev/null
+    echo "  juice-shop starting on http://127.0.0.1:3000 (give it ~30s)"
+  fi
 else
-  # Localhost-bound: this is a deliberately vulnerable app, never expose it.
-  docker run -d --rm --name juice-shop -p 127.0.0.1:3000:3000 bkimminich/juice-shop >/dev/null
-  echo "  juice-shop starting on http://127.0.0.1:3000 (give it ~30s)"
+  echo "  docker daemon not reachable from your user. Run once, then re-run this step:"
+  echo "    sudo usermod -aG docker \"$USER\" && newgrp docker"
+  echo "    docker run -d --rm --name juice-shop -p 127.0.0.1:3000:3000 bkimminich/juice-shop"
+  echo "  (setup steps 1-5 already passed; nothing else is blocked)"
 fi
 
 echo ""
