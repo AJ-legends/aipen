@@ -7,11 +7,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-echo "==> 1/6 Python 3.12"
-python3.12 --version
+echo "==> 1/6 Python >= 3.12"
+if command -v python3.12 >/dev/null 2>&1; then PYBIN=python3.12; else PYBIN=python3; fi
+"$PYBIN" -c "import sys; assert sys.version_info >= (3, 12), sys.version; print('  python:', sys.version.split()[0])"
 
 echo "==> 2/6 virtualenv + dependencies"
-if [ ! -d .venv ]; then python3.12 -m venv .venv; fi
+if [ ! -d .venv ]; then "$PYBIN" -m venv .venv; fi
 .venv/bin/pip install --upgrade pip >/dev/null
 .venv/bin/pip install -e ".[dev]"
 
