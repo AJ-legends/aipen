@@ -3,14 +3,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, status
+from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field, HttpUrl
 
 from app.approvals.service import ApprovalService
 from app.core.db import connection, json_value
 from app.core.schemas import AppProfile, RunState, ScopeConfig, TargetCreate, TargetSummary
 from app.orchestrator import RunService
+from app.reports.metrics import compute_metrics
+from app.reports.renderer import build_report, render_html, render_markdown, report_payload
 
 logger = logging.getLogger(__name__)
 
@@ -374,6 +376,42 @@ def build_router(database_path: Path) -> APIRouter:
             rows = db.execute(query + " ORDER BY created_at DESC", args).fetchall()
         return [dict(row) for row in rows]
 
+    @router.get("/runs/{run_id}/report")
+    def run_report(run_id: UUID, format: str = "markdown") -> object:
+        from fastapi.responses import HTMLResponse, PlainTextResponse
+
+        from app.reports.renderer import build_report, render_html, render_markdown, report_payload
+
+        if format not in ("markdown", "html", "json"):
+            raise HTTPException(status_code=422, detail="format must be markdown, html, or json.")
+        try:
+            run = runs.get_run(run_id)
+            data = build_report(run.target_id, database_path, run_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        with connection(database_path) as db:
+            db.execute(
+                "INSERT INTO audit_log (ts, actor, event, detail) VALUES (?, ?, ?, ?)",
+                (datetime.now(UTC).isoformat(), "operator", "report_generated", json_value({"run_id": str(run_id), "format": format})),
+            )
+        if format == "html":
+            return HTMLResponse(render_html(data))
+        if format == "json":
+            return report_payload(data)
+        return PlainTextResponse(render_markdown(data), media_type="text/markdown")
+
+    @router.get("/runs/{run_id}/metrics")
+    def run_metrics(run_id: UUID, planted_total: int | None = None) -> dict[str, object]:
+        from app.reports.metrics import compute_metrics
+
+        try:
+            runs.get_run(run_id)
+            return compute_metrics(database_path, run_id=run_id, planted_total=planted_total)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
     @router.get("/targets/{target_id}/hosts")
     def list_hosts(target_id: UUID) -> list[dict[str, object]]:
         with connection(database_path) as db:
@@ -454,5 +492,47 @@ def build_router(database_path: Path) -> APIRouter:
             prompt_version=row["prompt_version"],
             created_at=datetime.fromisoformat(row["created_at"]),
         )
+
+    @router.get("/targets/{target_id}/report")
+    def get_report(
+        target_id: UUID,
+        run_id: UUID | None = None,
+        format: str = Query(default="json", pattern="^(json|md|markdown|html)$"),
+    ) -> object:
+        try:
+            data = build_report(target_id, database_path, run_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        with connection(database_path) as db:
+            db.execute(
+                "INSERT INTO audit_log (ts, actor, event, detail) VALUES (?, ?, ?, ?)",
+                (
+                    datetime.now(UTC).isoformat(),
+                    "operator",
+                    "report_generated",
+                    json_value({"target_id": str(target_id), "run_id": str(run_id) if run_id else None, "format": format}),
+                ),
+            )
+        if format == "html":
+            return HTMLResponse(content=render_html(data))
+        if format in ("md", "markdown"):
+            return PlainTextResponse(content=render_markdown(data), media_type="text/markdown")
+        return report_payload(data)
+
+    @router.get("/runs/{run_id}/metrics")
+    def get_run_metrics(run_id: UUID, planted_total: int | None = None) -> dict[str, object]:
+        try:
+            runs.get_run(run_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return compute_metrics(database_path, run_id=run_id, planted_total=planted_total)
+
+    @router.get("/targets/{target_id}/metrics")
+    def get_target_metrics(target_id: UUID, planted_total: int | None = None) -> dict[str, object]:
+        with connection(database_path) as db:
+            exists = db.execute("SELECT id FROM targets WHERE id = ?", (str(target_id),)).fetchone()
+            if exists is None:
+                raise HTTPException(status_code=404, detail="Target does not exist.")
+        return compute_metrics(database_path, target_id=target_id, planted_total=planted_total)
 
     return router

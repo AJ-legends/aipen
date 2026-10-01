@@ -79,12 +79,33 @@
   after Windows-network findings: `agentrouter.org` blackholes POST bodies from this
   host (GETs fine), and its ALB needs `AIPEN_TLS_MAX=1.2` under Windows Store
   Python's OpenSSL (opt-in `tls_verify_setting()`; system TLS by default).
+- S6 completion (reporting + evaluation): unified the in-tree 9/29 report attempt
+  onto one design — `app/reports/renderer.py` (target- or run-scoped Markdown/HTML/
+  JSON with curl PoCs, hypotheses ledger, empty states) as the single engine;
+  unified `compute_metrics()` (run or target scope, flat keys, recall via detailed
+  ground-truth list or `planted_total`); `python -m app.reports.cli report|evaluate`;
+  `GET /runs/{id}/report|metrics` plus target-scoped twins; dashboard report buttons;
+  `docs/runbook-juiceshop.md` benchmark protocol with anti-overfit rules. 68 tests
+  passing; `ruff check .` and `mypy app` (strict) clean. Live benchmark + v1.0 tag
+  remain operator-side on Kali.
 
-## Deliberately deferred (S6 and beyond)
+- S6 completion (M6 evidence of value): `app/reports/renderer.py` (deterministic
+  `build_report` + Markdown/HTML/JSON, severity-ordered, curl PoCs from recorded
+  mutated URLs, hypotheses ledger + evidence appendix),
+  `app/reports/metrics.py` (§8.2 from stored tables: FP rate, precision proxy,
+  recall with planted total, $/finding, TTFVF, loop efficiency, verifier
+  agreement, safety out-of-scope executions, override rate),
+  `GET /targets/{id}/report?run_id=&format=json|md|html` (audited
+  `report_generated`), `GET /runs/{id}/metrics` + `GET /targets/{id}/metrics`,
+  `scripts/evaluate.py` CLI, dashboard report/metrics buttons,
+  `docs/runbook-juiceshop.md` + `docs/evaluation/README.md` with FP-tuning
+  notes. 64 tests passing; `ruff check .` and `mypy app` (strict) clean.
 
-Report engine (Markdown/HTML/JSON exports), full Juice Shop benchmark with §8
-metrics, false-positive tuning, and the v1.0 release tag. Live model-backed
-loop validation on Kali (Windows host blackholes the provider's POST path).
+## Deliberately deferred (beyond S6)
+
+Live Juice Shop benchmark numbers with §8 metrics table, second-target
+generalisation check, and the v1.0 release tag. Live model-backed loop
+validation stays on Kali (Windows host blackholes the provider's POST path).
 
 ## Validation note
 

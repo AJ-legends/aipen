@@ -1,1 +1,1 @@
-"""Report rendering boundary for future Markdown, HTML, and JSON exports."""
+"""S6 report boundary: Markdown/HTML/JSON exports plus evaluation metrics."""

@@ -32,7 +32,9 @@ nano .env   # AGENTROUTER_API_KEY=<key>
 
 Create a target → run `recon` → `discovery` → `signals` → `test` → (approve
 medium-risk probes) → `continue` → `analyze` (add `use_ai: true` to spend model
-budget) → findings. All long phases run as background jobs; poll `GET /runs/{id}`.
+budget) → findings → `GET /targets/{id}/report?format=md|html|json` +
+`GET /runs/{id}/metrics` (or `python scripts/evaluate.py --run <id>`).
+All long phases run as background jobs; poll `GET /runs/{id}`.
 
 ## Current structure
 
@@ -48,6 +50,7 @@ budget) → findings. All long phases run as background jobs; poll `GET /runs/{i
 - `app/testing` — differential HTTP executor, SQLi/XSS/IDOR/SSRF/API modules, sqlmap
   escalation, HITL approvals integration.
 - `app/approvals` — human-in-the-loop approval queue.
+- `app/reports` — deterministic report renderer (MD/HTML/JSON) + §8.2 metrics.
 - `prompts` — versioned structured-output prompt contracts.
 
 See `docs/AIPEN-Project-Requirements-and-Design.md` for the approved design and

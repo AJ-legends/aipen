@@ -45,6 +45,12 @@
         <label style="display:inline"><input type="checkbox" id="use-ai" style="width:auto"> AI authors (spends budget)</label>
       </div>
       <p class="muted">State: <code id="r-state">—</code> <span id="r-msg"></span></p>
+      <div>
+        <button class="ghost" onclick="report('markdown')">Report: Markdown</button>
+        <button class="ghost" onclick="report('html')">HTML</button>
+        <button class="ghost" onclick="metrics()">Metrics JSON</button>
+      </div>
+      <pre id="report-out" class="muted" style="white-space:pre-wrap"></pre>
     </section>
 
     <section class="card">
@@ -57,6 +63,11 @@
       <section class="card">
         <h2>Findings</h2>
         <button class="ghost" onclick="loadFindings()">Refresh</button>
+        <button class="ghost" onclick="openReport('json')">Report JSON</button>
+        <button class="ghost" onclick="openReport('md')">Report MD</button>
+        <button class="ghost" onclick="openReport('html')">Report HTML</button>
+        <button class="ghost" onclick="loadMetrics()">Metrics</button>
+        <pre id="metrics" class="muted"></pre>
         <table><thead><tr><th>Severity</th><th>Title</th></tr></thead><tbody id="findings"></tbody></table>
       </section>
       <section class="card">
@@ -130,6 +141,17 @@ async function pollState(run) {
   $("r-state").textContent = r.state;
   await loadApprovals();
 }
+async function report(format) {
+  const run = $("r-run").value; if (!run) return;
+  if (format === "html") { window.open(`/api/runs/${run}/report?format=html`, "_blank"); return; }
+  const r = await fetch(`/api/runs/${run}/report?format=${format}`);
+  $("report-out").textContent = (await r.text()).slice(0, 4000);
+}
+async function metrics() {
+  const run = $("r-run").value; if (!run) return;
+  const m = await api("GET", `/api/runs/${run}/metrics`);
+  $("report-out").textContent = JSON.stringify(m, null, 1).slice(0, 4000);
+}
 async function loadApprovals() {
   const run = $("r-run").value;
   const list = await api("GET", `/api/approvals${run ? `?run_id=${run}` : ""}`);
@@ -146,6 +168,17 @@ async function loadFindings() {
   const t = $("r-target").value; if (!t) return;
   const list = await api("GET", `/api/targets/${t}/findings`);
   $("findings").innerHTML = list.map(f => `<tr><td><span class="pill ${esc(f.severity)}">${esc(f.severity)}</span></td><td>${esc(f.title)}</td></tr>`).join("");
+}
+function openReport(format) {
+  const t = $("r-target").value; if (!t) return;
+  const run = $("r-run").value;
+  const qs = run ? `?run_id=${run}&format=${format}` : `?format=${format}`;
+  window.open(`/api/targets/${t}/report${qs}`, "_blank");
+}
+async function loadMetrics() {
+  const run = $("r-run").value; if (!run) return;
+  const m = await api("GET", `/api/runs/${run}/metrics`);
+  $("metrics").textContent = JSON.stringify(m, null, 1).slice(0, 1500);
 }
 async function loadHypotheses() {
   const t = $("r-target").value; if (!t) return;
